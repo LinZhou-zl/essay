@@ -1,0 +1,719 @@
+---
+title: "Vegans and Vegetarians in Public Discourse: a Corpus-based Study of the Guardian
+  and the New York Times"
+author: "B242169"
+date: "2024-04-20"
+output: pdf_document
+---
+
+## This section of the code uses The New York Times API to retrieve data. Since The New York Times API only allows fetching data in segments, I have to gather news articles by splitting the requests by keywords and time periods. I realize this approach might seem inefficient, but forgive me.
+
+## Get The New York Times article with "vegetarian" "vegetarians" "vegan" "vegans" "vegetarianism" "veganism"in the title for 2020 to 2021
+```{r}
+# Loading Necessary Libraries
+library(httr)
+library(jsonlite)
+library(tibble)
+
+# Setting Up API and Authentication Information
+base_url <- "https://api.nytimes.com/svc/search/v2/articlesearch.json"
+Sys.setenv(NYT_API_KEY = "4nk3XwHzM6O7GjoO9QpGxbxMZZU1nMPJ")
+apikey <- Sys.getenv("NYT_API_KEY")
+
+# Initializing Query Parameters
+query <- "vegetarians" # try "vegans"/ "vegetarianism"/ "veganism"  
+begin_date <- "20200101"
+end_date <- "20200131"  #Length of time Try for a month at a time,totally 24 times
+page <- 0
+page_size <- 100
+nyt_2020_vegetarian <- tibble(title = character(), author = character(), date = character(), abstract = character(), url = character())  #Creating an Empty Data Frame
+
+# Performing the Initial Query to Obtain Total Pages
+initial_query <- GET(base_url, query = list(q = query, "api-key" = apikey, "begin_date" = begin_date, "end_date" = end_date, "page" = 1, "page_size" = 10))
+if (http_error(initial_query)) {
+  stop("HTTP error on initial query: ", initial_query$status_code)
+}
+initial_json <- content(initial_query, "parsed")
+total_hits <- initial_json$response$meta$hits
+total_pages <- ceiling(total_hits / page_size)
+
+# Looping Through All Pages to Retrieve Data
+while (page < total_pages) {
+  page <- page + 1
+  response <- GET(base_url, query = list(q = query, "api-key" = apikey, "begin_date" = begin_date, "end_date" = end_date, "page" = page, "page_size" = page_size))
+  
+  Sys.sleep(13)  # Pause for 13 seconds after each request
+  
+  if (http_error(response)) {
+    stop("HTTP error ", response$status_code)
+  }
+  
+  json <- content(response, "parsed")
+  articles <- json$response$docs
+  if (length(articles) == 0) break
+  
+# Extracting and Organizing Article Data from Each Page Response
+  articles_df <- tibble(
+    title = sapply(articles, function(x) x$headline$main %||% NA),
+    author = sapply(articles, function(x) x$byline$original %||% NA),
+    date = sapply(articles, function(x) x$pub_date),
+    abstract = sapply(articles, function(x) x$abstract %||% NA),
+    url = sapply(articles, function(x) x$web_url)
+  )
+  
+  nyt_2020_vegetarian <- bind_rows(nyt_2020_vegetarian, articles_df) # Merges the newly retrieved article data into the main data frame
+}
+```
+
+## Write the data frame to a CSV file
+```{r}
+write.csv(nyt, "nyt.csv", row.names = FALSE)
+```
+
+## Manually collate all the collected data to generate nyt. csv
+
+## import NYT data
+```{r}
+nyt_data <- read.csv("nyt.csv")
+
+head(nyt_data) #Look at the first few lines of data
+```
+
+## import Guardian data
+
+## The guardian of the API code from https://docs.evanodell.com/guardianapi/
+
+```{r}
+# Load the 'guardianapi' package which allows for accessing content from The Guardian newspaper through its API.
+library(guardianapi)
+
+# Use the 'gu_content' function to search for articles on The Guardian's website.
+# The search is tailored for articles containing keywords related to vegetarian and vegan topics.
+# The date range specified is from January 1, 2020, to December 31, 2021.
+guardian <- gu_content(query = "vegetarian vegan vegetarians vegans vegetarianism veganism", from_date = "2020-01-01",
+                            to_date = "2021-12-31")
+```
+
+
+
+
+
+## sentiment analysis
+
+# Loading Necessary Libraries
+```{r, message=F}
+library(kableExtra) # creats advanced HTML or LaTeX tables with added features like formatting and styling
+library(tidyverse) # loads dplyr, ggplot2, and others
+library(readr) # more informative and easy way to import data
+library(stringr) # to handle text elements
+library(tidytext) # includes set of functions useful for manipulating text
+library(quanteda) # includes functions to implement Lexicoder
+library(textdata) #helps in obtaining and managing text datasets and lexicons
+```
+```{r, message=F}
+library(academictwitteR) # for fetching Twitter data
+```
+
+```{r}
+# Retrieves and displays the current working directory path where the R session is running
+getwd()
+```
+
+# Select the part of the New York Times dataset that I'm interested in
+```{r}
+nytdataset <- nyt_data %>% # Load the 'nyt_data' dataset and then use the dplyr pipe operator (%>%) to chain operations
+  select(title, date, abstract) # Select only the 'title', 'date', and 'abstract' columns from the 'nyt_data' dataframe
+```
+
+
+# The New York Times' data cleansing
+```{r}
+# Check coding
+Encoding(nytdataset$title)
+
+# Set the encoding to UTF-8
+nytdataset$title <- iconv(nytdataset$title, to = "UTF-8")
+
+# I manipulate the data into tidy format again, unnesting each token (here: words) from the title text.
+tidy_nytdataset <- nytdataset %>% 
+  mutate(desc = tolower(title)) %>%
+  unnest_tokens(word, desc) %>%
+  filter(str_detect(word, "[a-z]"))
+
+# removing stop words
+tidy_nytdataset <- tidy_nytdataset %>%
+    filter(!word %in% stop_words$word) 
+```
+
+# Select the part of the Guardian dataset that interests me
+```{r}
+guadataset <- guardian %>%
+  select(web_title, web_publication_date, standfirst) %>%
+  rename(title = web_title , 
+         pub_date = web_publication_date)
+```
+
+# The Guardian data Cleansing
+```{r}
+# I manipulate the data into tidy format again, unnesting each token (here: words) from the title text.
+tidy_guadataset <- guadataset %>% 
+  mutate(desc = tolower(title)) %>%  # Convert the text in the 'title' column to lowercase to ensure uniformity for text analysis
+  unnest_tokens(word, desc) %>%
+  filter(str_detect(word, "[a-z]"))  # Keep only those rows where the 'word' contains alphabetic characters, filtering out numbers and punctuation
+
+# removing stop words
+tidy_guadataset <- tidy_guadataset %>%
+    filter(!word %in% stop_words$word)
+```
+
+# Get sentiment dictionaries
+
+# Several sentiment dictionaries come bundled with the tidytext package. These are:"AFINN" from Finn Årup Nielsen,"bing" from Bing Liu and collaborators, "andnrc" from Saif Mohammad and Peter Turney
+
+```{r}
+get_sentiments("afinn")
+get_sentiments("bing")
+get_sentiments("nrc")
+```
+
+# let’s have a look at the words in Guardian's data and the New York Times data that the "nrc" lexicon codes as positive-related words.
+
+```{r}
+# Load positive sentiments from the NRC sentiment lexico
+nrc_positive <- get_sentiments("nrc") %>% 
+  filter(sentiment == "positive")
+
+# Using the 'tidy_guadataset' dataset
+tidy_guadataset %>%
+  inner_join(nrc_positive) %>% # Join it with the 'nrc_positive' dataset to retain only words that are labeled as positive
+  count(word, sort = TRUE)  # Count the occurrence of each positive word, sorting them in descending order of frequency
+
+# Using the 'tidy_nytdataset' dataset
+tidy_nytdataset %>%
+  inner_join(nrc_positive) %>%  # Similarly, join with the 'nrc_positive' data to filter for positive words
+  count(word, sort = TRUE)  # Count and sort these words by their frequency
+```
+
+
+
+
+
+
+## Sentiment trends over time
+
+# let’s make sure the data are properly arranged in ascending order by date. I add column, which we’ll call “order,” 
+
+```{r}
+# Convert the 'pub_date' column in 'tidy_guadataset' to a date format
+tidy_guadataset$date <- as.Date(tidy_guadataset$pub_date)
+
+# Sort 'tidy_guadataset' by the newly formatted 'date' column
+tidy_guadataset <- tidy_guadataset %>%
+  arrange(date)
+
+# Add a new column 'order' to 'tidy_guadataset' that assigns a unique sequential number to each row, ordered by date
+tidy_guadataset$order <- 1:nrow(tidy_guadataset)
+```
+
+```{r}
+# Convert the 'date' column in 'tidy_nytdataset' to a date format.
+tidy_nytdataset$date <- as.Date(tidy_nytdataset$date)
+
+# Sort 'tidy_nytdataset' by the newly formatted 'date' column
+tidy_nytdataset <- tidy_nytdataset %>%
+  arrange(date)
+
+# Add a new column 'order' to 'tidy_nytdataset' that assigns a unique sequential number to each row, ordered by date
+tidy_nytdataset$order <- 1:nrow(tidy_nytdataset)
+```
+
+# The structure of data is in a one token (word) per document format. In order to look at sentiment trends over time, It needs to decide over how many words to estimate the sentiment.
+
+# In the below, I first add in sentiment dictionary with inner_join(). I then use the count() function, specifying that I want to count over dates, and that words should be indexed in order (i.e., by row number) over every 1000 rows (i.e., every 1000 words).
+
+# This means that if one date has many tweets totalling >1000 words, then I will have multiple observations for that given date; if there are only one or two tweets then I might have just one row and associated sentiment score for that date.
+
+# I then calculate the sentiment scores for each of sentiment types (positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust) and use the spread() function to convert these into separate columns (rather than rows). Finally I calculate a net sentiment score by subtracting the score for negative sentiment from positive sentiment.
+
+```{r}
+# Start with the 'tidy_guadataset' dataframe and perform an inner join with the NRC sentiment data
+guadataset_nrc_sentiment <- tidy_guadataset %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%  # Count occurrences of each sentiment by date and a grouping index calculated by integer division of 'order' by 1000
+  spread(sentiment, n, fill = 0) %>%  # Transform the data from long to wide format, creating separate columns for each sentiment
+  mutate(sentiment = positive - negative) # Calculate a net sentiment score by subtracting the count of 'negative' sentiments from 'positive'
+```
+
+```{r}
+# Use the 'guadataset_nrc_sentiment' dataframe for plotting
+guadataset_nrc_sentiment %>%
+  ggplot(aes(date, sentiment)) +  # Create a plot using ggplot with 'date' on the x-axis and 'sentiment' on the y-axis
+  geom_point(alpha=0.5) +  # Add points to the plot, with a semi-transparent overlay to manage overplotting
+  geom_smooth(method= loess, alpha=0.25)  # Add a smoothed trend line using a locally estimated scatterplot smoothing (loess) method with transparency
+```
+
+```{r}
+# Start with the 'tidy_nytdataset' dataframe and perform an inner join with the NRC sentiment data
+nytdataset_nrc_sentiment <- tidy_nytdataset %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r}
+# Use the 'nytdataset_nrc_sentiment' dataframe for plotting
+nytdataset_nrc_sentiment %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25)
+```
+
+# How do different sentiment dictionaries look when compared to each other? I can then plot the sentiment scores over time for each of sentiment dictionaries
+
+```{r}
+# get Guardian sentiment by sentiment dictionary "bring"
+tidy_guadataset %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("bing sentiment")
+```
+
+```{r}
+# get Guardian sentiment by sentiment dictionary "afinn"
+tidy_guadataset %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(date, index = order %/% 1000) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("afinn sentiment")
+```
+
+```{r}
+# get the New York Times sentiment by sentiment dictionary "bring"
+tidy_nytdataset %>%
+  inner_join(get_sentiments("bing")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative) %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("bing sentiment")
+```
+
+```{r}
+# get the New York Times sentiment by sentiment dictionary "afinn"
+tidy_nytdataset %>%
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(date, index = order %/% 1000) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25) +
+  ylab("afinn sentiment")
+```
+
+
+## Using Lexicoder 
+
+# The above approaches use general dictionary-based techniques that were not designed for domain-specific text such as news text. The Lexicoder Sentiment Dictionary, by Young and Soroka (2012) was designed specifically for examining the affective content of news text.
+
+# I will conduct the analysis using the "quanteda" package. 
+
+# With the "quanteda" package I first need to create a “corpus” object, by declaring Guardian and the New York Times a corpus object. Here, I make sure our date column is correctly stored and then create the corpus object with the "corpus()" function. Note that I are specifying the "text_field" as “title”as this is where my text data of interest is, and I are including information on the date that “Guardian” and “the New York Times” was published. This information is specified with the "docvars" argument. You’ll see tthen that the corpus consists of the text and so-called “docvars,” which are just the variables (columns) in the original dataset. Here, I have only included the date column.
+
+# The Guardian
+```{r}
+# Convert the 'pub_date' column in 'guadataset' to a date format.
+guadataset$date <- as.Date(guadataset$pub_date)
+
+# Create a corpus object from the 'guadataset'. The corpus will use the 'title' column as text data and 'date' as document variables
+guadataset_corpus <- corpus(guadataset, text_field = "title", docvars = "date")
+```
+
+# The New York Times
+```{r}
+# Convert the 'date' column in 'nytdataset' to a date format
+nytdataset$date <- as.Date(nytdataset$date)
+
+# Create a corpus object from the 'nytdataset', using 'title' for text and 'date' as document variables
+nytdataset_corpus <- corpus(nytdataset, text_field = "title", docvars = "date")
+```
+
+
+# I then tokenize text using the "tokens()" function from quanteda, removing punctuation along the way
+
+# The Guardian
+```{r}
+# Tokenize the text data in 'guadataset_corpus', removing punctuation
+toks_guadataset <- tokens(guadataset_corpus, remove_punct = TRUE)
+```
+
+# The New York Times
+```{r}
+# Tokenize the text data in 'nytdataset_corpus', removing punctuation
+toks_nytdataset <- tokens(nytdataset_corpus, remove_punct = TRUE)
+```
+
+# I then take the "data_dictionary_LSD2015" that comes bundled with "quanteda" and I select only the positive and negative categories, excluding words deemed “neutral.” After this, I are ready to “look up” in this dictionary how the tokens in corpus are scored with the "tokens_lookup()" function.
+
+```{r}
+# select only the "negative" and "positive" categories
+data_dictionary_LSD2015_pos_neg <- data_dictionary_LSD2015[1:2]
+```
+
+# The Guardian
+```{r}
+# Apply the filtered LSD2015 dictionary to the tokenized data from 'toks_guadataset' to classify tokens as 'negative' or 'positive'.
+toks_guadataset_lsd <- tokens_lookup(toks_guadataset, dictionary = data_dictionary_LSD2015_pos_neg)
+```
+
+# The New York Times
+```{r}
+# Similarly, classify tokens from 'toks_nytdataset' using the same sentiment dictionary
+toks_nytdataset_lsd <- tokens_lookup(toks_nytdataset, dictionary = data_dictionary_LSD2015_pos_neg)
+```
+
+# This creates a long list of all the texts (title) annotated with a series of ‘positive’ or ‘negative’ annotations depending on the valence of the words in that text. The creators of "quanteda" then recommend I generate a document feature matric from this. Grouping by date, I then get a dfm object, which is a quite convoluted list object that I can plot using base graphics functions for plotting matrices.
+
+# The Guardian
+```{r}
+# create a document document-feature matrix and group it by date
+dfmat_guadataset_lsd <- dfm(toks_guadataset_lsd) %>% 
+  dfm_group(groups = date)
+
+# plot positive and negative valence over time
+matplot(dfmat_guadataset_lsd$date, dfmat_guadataset_lsd, type = "l", lty = 1, col = 1:2,
+        ylab = "Frequency", xlab = "")
+grid()
+legend("topleft", col = 1:2, legend = colnames(dfmat_guadataset_lsd), lty = 1, bg = "white")
+```
+
+# The New York Times
+```{r}
+# create a document document-feature matrix and group it by date
+dfmat_nytdataset_lsd <- dfm(toks_nytdataset_lsd) %>% 
+  dfm_group(groups = date)
+
+# plot positive and negative valence over time
+matplot(dfmat_nytdataset_lsd$date, dfmat_nytdataset_lsd, type = "l", lty = 1, col = 1:2,
+        ylab = "Frequency", xlab = "")
+grid()
+legend("topleft", col = 1:2, legend = colnames(dfmat_nytdataset_lsd), lty = 1, bg = "white")
+```
+
+# The Guardian
+```{r}
+# plot overall sentiment (positive  - negative) over time
+
+plot(dfmat_guadataset_lsd$date, dfmat_guadataset_lsd[,"positive"] - dfmat_guadataset_lsd[,"negative"], 
+     type = "l", ylab = "Sentiment", xlab = "")
+grid()
+abline(h = 0, lty = 2)
+```
+
+# The New York Times
+```{r}
+# plot overall sentiment (positive  - negative) over time
+
+plot(dfmat_nytdataset_lsd$date, dfmat_nytdataset_lsd[,"positive"] - dfmat_nytdataset_lsd[,"negative"], 
+     type = "l", ylab = "Sentiment", xlab = "")
+grid()
+abline(h = 0, lty = 2)
+```
+
+
+# As the chart shows, the New York Times and Guardian headlines reflect a more neutral mood. While the Guardian's sentiment was more positive than that of the New York Times, overall the difference between the two papers was less pronounced.
+
+#So I wanted to try a sentiment analysis of the New York Times and Guardian abstract, respectively
+
+# The Guardian abstract
+```{r}
+# I manipulate the data into tidy format again, unnesting each token (here: words) from the standfirst text.
+tidy_guadataset <- guadataset %>% 
+  mutate(desc = tolower(standfirst)) %>%
+  unnest_tokens(word, desc) %>%
+  filter(str_detect(word, "[a-z]"))
+
+# removing stop words
+tidy_guadataset <- tidy_guadataset %>%
+    filter(!word %in% stop_words$word)
+```
+
+```{r}
+#gen data variable, order and format date
+tidy_guadataset$date <- as.Date(tidy_guadataset$pub_date)
+
+tidy_guadataset <- tidy_guadataset %>%
+  arrange(date)
+
+tidy_guadataset$order <- 1:nrow(tidy_guadataset)
+```
+
+```{r}
+#get Guardian abstract sentiment by date
+guadataset_nrc_sentiment <- tidy_guadataset %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r}
+# Guardian abstract sentiment graph
+guadataset_nrc_sentiment %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25)
+```
+
+# The New York Times abstract
+```{r}
+# Check coding
+Encoding(nytdataset$abstract)
+
+# Set the encoding to UTF-8
+nytdataset$abstract <- iconv(nytdataset$abstract, to = "UTF-8")
+
+# I manipulate the data into tidy format again, unnesting each token (here: words) from the abstract text.
+tidy_nytdataset <- nytdataset %>% 
+  mutate(desc = tolower(abstract)) %>%
+  unnest_tokens(word, desc) %>%
+  filter(str_detect(word, "[a-z]"))
+
+# removing stop words
+tidy_nytdataset <- tidy_nytdataset %>%
+    filter(!word %in% stop_words$word) 
+```
+
+```{r}
+# Sort The New York Times data
+tidy_nytdataset$date <- as.Date(tidy_nytdataset$date)
+
+tidy_nytdataset <- tidy_nytdataset %>%
+  arrange(date)
+
+tidy_nytdataset$order <- 1:nrow(tidy_nytdataset)
+```
+
+```{r}
+# get The New York Times abstract sentiment by date
+nytdataset_nrc_sentiment <- tidy_nytdataset %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(date, index = order %/% 1000, sentiment) %>%
+  spread(sentiment, n, fill = 0) %>%
+  mutate(sentiment = positive - negative)
+```
+
+```{r}
+# The New York Times abstract sentiment graph
+nytdataset_nrc_sentiment %>%
+  ggplot(aes(date, sentiment)) +
+  geom_point(alpha=0.5) +
+  geom_smooth(method= loess, alpha=0.25)
+```
+
+
+#The Lexicoder Sentiment Dictionary was used to analyze abstract from the Guardian and the New York Times
+
+```{r}
+# The Guardian
+guadataset$date <- as.Date(guadataset$pub_date)
+
+guadataset_corpus_ab <- corpus(guadataset, text_field = "standfirst", docvars = "date")
+```
+```{r}
+# The New York Times
+nytdataset$date <- as.Date(nytdataset$date)
+
+nytdataset_corpus_ab <- corpus(nytdataset, text_field = "abstract", docvars = "date")
+
+```
+
+# I then tokenize text using the "tokens()" function from quanteda, removing punctuation along the way
+
+```{r}
+# Guardian
+toks_guadataset_ab <- tokens(guadataset_corpus_ab, remove_punct = TRUE)
+```
+
+```{r}
+# the New York Times
+toks_nytdataset_ab <- tokens(nytdataset_corpus_ab, remove_punct = TRUE)
+```
+
+# I then take the "data_dictionary_LSD2015" that comes bundled with "quanteda" and I select only the positive and negative categories, excluding words deemed “neutral.” After this, I are ready to “look up” in this dictionary how the tokens in corpus are scored with the "tokens_lookup()" function.
+
+```{r}
+# select only the "negative" and "positive" categories
+data_dictionary_LSD2015_pos_neg <- data_dictionary_LSD2015[1:2]
+
+# Guardian
+toks_guadataset_lsd_ab <- tokens_lookup(toks_guadataset_ab, dictionary = data_dictionary_LSD2015_pos_neg)
+
+# the New York Times
+toks_nytdataset_lsd_ab <- tokens_lookup(toks_nytdataset_ab, dictionary = data_dictionary_LSD2015_pos_neg)
+```
+
+# This creates a long list of all the texts (abstract) annotated with a series of ‘positive’ or ‘negative’ annotations depending on the valence of the words in that text. The creators of "quanteda" then recommend I generate a document feature matric from this. Grouping by date, I then get a dfm object, which is a quite convoluted list object that I can plot using base graphics functions for plotting matrices.
+
+```{r}
+# The Guardian
+# create a document document-feature matrix and group it by date
+dfmat_guadataset_lsd_ab <- dfm(toks_guadataset_lsd_ab) %>% 
+  dfm_group(groups = date)
+
+# plot positive and negative valence over time
+matplot(dfmat_guadataset_lsd_ab$date, dfmat_guadataset_lsd_ab, type = "l", lty = 1, col = 1:2,
+        ylab = "Frequency", xlab = "")
+grid()
+legend("topleft", col = 1:2, legend = colnames(dfmat_guadataset_lsd_ab), lty = 1, bg = "white")
+```
+
+```{r}
+# The New York Times
+# create a document document-feature matrix and group it by date
+dfmat_nytdataset_lsd_ab <- dfm(toks_nytdataset_lsd_ab) %>% 
+  dfm_group(groups = date)
+
+# plot positive and negative valence over time
+matplot(dfmat_nytdataset_lsd_ab$date, dfmat_nytdataset_lsd_ab, type = "l", lty = 1, col = 1:2,
+        ylab = "Frequency", xlab = "")
+grid()
+legend("topleft", col = 1:2, legend = colnames(dfmat_nytdataset_lsd_ab), lty = 1, bg = "white")
+```
+
+```{r}
+# The Guardian
+# plot overall sentiment (positive  - negative) over time
+
+plot(dfmat_guadataset_lsd_ab$date, dfmat_guadataset_lsd_ab[,"positive"] - dfmat_guadataset_lsd_ab[,"negative"], 
+     type = "l", ylab = "Sentiment", xlab = "")
+grid()
+abline(h = 0, lty = 2)
+```
+
+```{r}
+# The New York Times
+# plot overall sentiment (positive  - negative) over time
+
+plot(dfmat_nytdataset_lsd_ab$date, dfmat_nytdataset_lsd_ab[,"positive"] - dfmat_nytdataset_lsd_ab[,"negative"], 
+     type = "l", ylab = "Sentiment", xlab = "")
+grid()
+abline(h = 0, lty = 2)
+```
+
+
+
+
+
+## Word Frequency Analysis
+
+# Before proceeding, I load the packages we will need for this tutorial.
+
+```{r, message=F}
+library(tidyverse) # loads dplyr, ggplot2, and others
+library(stringr) # to handle text elements
+library(tidytext) # includes set of functions useful for manipulating text
+library(topicmodels) # to estimate topic models
+library(gutenbergr) # to get text data
+library(scales) # Provides methods for automatically determining breaks and labels for plotting
+library(tm) # Framework for text mining applications
+library(ggthemes) # to make your plots look nice
+library(readr) # Part of the tidyverse; focuses on fast and flexible data reading
+library(quanteda) # A package for the quantitative analysis of textual data
+library(quanteda.textmodels) # Implements models for scaling and classification that integrate with quanteda
+library(devtools) # Tools to make package development easier
+devtools::install_github("matthewjdenny/preText") # Installs the preText package directly from its GitHub repository, which is useful for text preprocessing and comparison tasks
+library(preText) # Provides functionalities to prepare text data for analysis, ensuring comparability across texts
+```
+
+```{r}
+# Select specific columns ('title' and 'date') from 'nyt_data'.
+nyt_dataset_wf <- nyt_data %>%
+  select(title, date)
+
+# Load the 'dplyr' package, which provides functions for data manipulation
+library(dplyr)
+
+# Add a new column 'gutenberg_id' to the dataframe 'nyt_dataset_wf' and assign a constant value of 815 to all rows
+nyt_dataset_wf <- nyt_dataset_wf%>%
+  mutate(gutenberg_id = 815)
+```
+
+```{r}
+# Select specific columns and then rename them in the 'guardian' dataset
+guardian_dataset_wf <- guardian %>%
+  select(web_title, web_publication_date) %>%
+  rename(title = web_title , 
+         date = web_publication_date)
+
+# Add a new column 'gutenberg_id' to the dataframe and assign a constant value of 816 to all rows.
+guardian_dataset_wf <- guardian_dataset_wf %>%
+  mutate(gutenberg_id = 816)
+```
+
+# Convert datetime to character for guardian_dataset_wf before binding
+```{r}
+# Convert the 'date' column in 'guardian_dataset_wf' from its current format (possibly Date) to character strings.
+guardian_dataset_wf <- guardian_dataset_wf %>%
+  mutate(date = as.character(date))
+```
+
+# Combine the two datasets
+```{r}
+tocq <- bind_rows(nyt_dataset_wf, guardian_dataset_wf)
+```
+
+# see whether there really are words obviously distinguishing the two Volumes.
+```{r}
+# Begin by taking the 'tocq' dataframe, then tokenize and remove stop words
+tidy_tocq <- tocq %>%
+  unnest_tokens(word, title) %>% # Tokenize the 'title' column into separate words
+  anti_join(stop_words) # Remove common stop words from the resulting tokenized data
+```
+
+# Count most common words in both
+```{r}
+# Take the 'tidy_tocq' dataframe, then count the occurrences of each word and sort the results
+tidy_tocq %>%
+  count(word, sort = TRUE) # Count each unique word and calculate its frequency
+```
+
+# Data Manipulation
+```{r}
+bookfreq <- tidy_tocq %>%
+  mutate(booknumber = ifelse(gutenberg_id==815, "DiA1", "DiA2")) %>% #This line adds a new column booknumber to differentiate between the two books based on their gutenberg_id. It assigns the label "DiA1" to the book with ID 815 and "DiA2" to the other.
+  mutate(word = str_extract(word, "[a-z']+")) %>% #cleaning and standardizing the text data.
+  count(booknumber, word) %>%
+  group_by(booknumber) %>%
+  mutate(proportion = n / sum(n)) %>% #These lines count the occurrences of each word for each book (booknumber), group the data by book, and then calculate the proportion of each word as a fraction of total words in that book.
+  select(-n) %>% 
+  spread(booknumber, proportion) #The spread function pivots the data from long to wide format, creating separate columns for the proportions of each word in both books, facilitating direct comparisons.
+```
+
+# Data Visualization
+```{r}
+ggplot(bookfreq, aes(x = DiA1, y = DiA2, color = abs(DiA1 - DiA2))) + #This sets up a scatter plot where each point represents a word. The x-axis and y-axis show the proportion of the word in "DiA1" and "DiA2" respectively. The color of the points indicates the absolute difference in proportions between the books.
+  geom_abline(color = "gray40", lty = 2) + #A reference line (y=x) is added to the plot to indicate where the proportions of words are equal between the two books.
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3) + #Points are added with a slight jitter to reduce overlap and make individual points more visible
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) + #Labels each point with its corresponding word while avoiding overlap of labels to enhance readability
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") + #Logarithmic scales are used for both axes to manage a wide range of values, with formatting as percentages. The color gradient represents the magnitude of differences in word proportions, from less to more significant.
+  theme_tufte(base_family = "Helvetica") +
+  theme(legend.position="none", 
+        strip.background = element_blank(), 
+        strip.text.x = element_blank()) +
+  labs(x = "The Guardian (DiA 2)", y = "The New York Times (DiA 1)") +
+  coord_equal() #A Tufte-inspired minimalistic theme is applied for aesthetic clarity, labels are added for both axes, and coord_equal ensures that one unit on the x-axis is equivalent to one unit on the y-axis, aiding in visual accuracy for comparisons.
+```
+
